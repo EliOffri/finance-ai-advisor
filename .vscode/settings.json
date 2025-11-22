@@ -1,0 +1,19 @@
+{
+  "editor.smoothScrolling": true,
+  "editor.minimap.enabled": false,
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "editor.fontFamily": "'JetBrains Mono', monospace",
+  "editor.linkedEditing": true,
+  "editor.renameOnType": true,
+  "breadcrumbs.enabled": true,
+  "explorer.compactFolders": false,
+  "files.insertFinalNewline": true,
+  "files.trimFinalNewlines": false,
+  "javascript.updateImportsOnFileMove.enabled": "always",
+  "typescript.updateImportsOnFileMove.enabled": "always",
+  "typescript.tsserver.useProjectWideIntellisense": true,
+  "typescript.tsserver.maxTsServerMemory": 4096
+}
