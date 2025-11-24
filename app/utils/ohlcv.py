@@ -9,6 +9,8 @@ def load_ohlcv(ticker: str) -> pd.DataFrame:
         WHERE ticker = %s
         ORDER BY date ASC;
     """
+
+
     df = pd.read_sql(query, conn, params=[ticker])
     conn.close()
     return df

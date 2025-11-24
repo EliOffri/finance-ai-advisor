@@ -1,115 +1,121 @@
-# app/scripts/train_model.py
-
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix
+from sklearn.metrics import mean_squared_error, r2_score
 from app.utils.db import get_conn
+import joblib
+from pathlib import Path
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 def load_data():
-    """
-    Load feature-engineered stock data from PostgreSQL.
-    This mirrors how load_to_db() works by using get_conn().
-    """
     conn = get_conn()
     query = """
-        SELECT t.*, o.open, o.high, o.low, o.close, o.volume
+        SELECT t.ticker, t.date, t.features,
+               o.open, o.high, o.low, o.close, o.volume
         FROM technical_features t
-        JOIN ohlcv o ON t.ticker = o.ticker AND t.date = o.date
+        JOIN ohlcv o
+            ON t.ticker = o.ticker AND t.date = o.date::date
         ORDER BY t.ticker, t.date;
     """
 
     df = pd.read_sql(query, conn)
+
+    features_df = pd.json_normalize(df["features"])
+    df = pd.concat([df, features_df], axis=1)
+
+    df = df.drop(columns=["features"])
+
     conn.close()
     return df
 
 
+def build_pipeline(model):
+    return Pipeline(steps=[
+        ("scaler", StandardScaler()),
+        ("model", model)
+    ])
+
+
 def prepare_dataset(df: pd.DataFrame):
-    """
-    Create the target label and clean dataset for machine learning.
-    """
+    df = df.sort_values(["ticker", "date"]).reset_index(drop=True)
 
-    # Target: 1 if tomorrow's close > today's close
-    df["target"] = (df["close"].shift(-1) > df["close"]).astype(int)
+    df["target"] = df.groupby("ticker")["close"].shift(-1) / df["close"] - 1
+    df = df.groupby("ticker", group_keys=False).apply(lambda g: g.iloc[:-1])
 
-    # Drop last row per ticker (because shift(-1) gives NaN)
-    df = df.groupby("ticker").apply(lambda x: x.iloc[:-1]).reset_index(drop=True)
-
-    # Columns we should NOT feed into ML
-    drop_cols = [
-        "id",
-        "ticker",
-        "date",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-    ]
-
+    drop_cols = ["ticker", "date", "open", "high", "low", "close", "volume"]
     df = df.drop(columns=drop_cols)
 
-    # Remove remaining NaNs
     df = df.dropna()
 
-    # Feature matrix and target vector
-    X = df.drop(columns=["target"])
     y = df["target"]
+    X = df.drop(columns=["target"])
 
     return X, y
 
 
-def split_time_based(X, y, train_ratio=0.8):
-    split_index = int(len(X) * train_ratio)
-
-    X_train = X.iloc[:split_index]
-    X_test = X.iloc[split_index:]
-
-    y_train = y.iloc[:split_index]
-    y_test = y.iloc[split_index:]
-
-    return X_train, X_test, y_train, y_test
-
-
-def evaluate(model, X_test, y_test, model_name):
+def evaluate_regression(model, X_test, y_test, name):
     preds = model.predict(X_test)
 
-    acc = accuracy_score(y_test, preds)
-    prec = precision_score(y_test, preds)
-    rec = recall_score(y_test, preds)
-    cm = confusion_matrix(y_test, preds)
+    mse = mean_squared_error(y_test, preds)
+    r2 = r2_score(y_test, preds)
 
-    print(f"\n===== {model_name} =====")
-    print(f"Accuracy:  {acc:.4f}")
-    print(f"Precision: {prec:.4f}")
-    print(f"Recall:    {rec:.4f}")
-    print("Confusion Matrix:")
-    print(cm)
+    print(f"\n===== {name} =====")
+    print(f"R²:          {r2:.4f}")
+    print(f"MSE:         {mse:.8f}")
+    print(f"Pred mean:   {preds.mean():.6f}")
+    print(f"True mean:   {y_test.mean():.6f}")
+
+    long_rate = (preds > 0).mean()
+    print(f"Long signal frequency: {long_rate:.2%}")
+
+
+def split_time_based(X, y, train_ratio=0.8):
+    split_index = int(len(X) * train_ratio)
+    return (
+        X.iloc[:split_index],
+        X.iloc[split_index:],
+        y.iloc[:split_index],
+        y.iloc[split_index:]
+    )
 
 
 def main():
-    print("Loading technical features from DB...")
+    print("Loading technical features...")
     df = load_data()
+    print("Loaded rows:", len(df))
+    print(df.head())
 
     print("Preparing dataset...")
     X, y = prepare_dataset(df)
-
     X_train, X_test, y_train, y_test = split_time_based(X, y)
 
-    print("Training Logistic Regression...")
-    lr = LogisticRegression(max_iter=2000)
-    lr.fit(X_train, y_train)
-    evaluate(lr, X_test, y_test, "Logistic Regression")
+    # LINEAR REGRESSION
+    print("Training Linear Regression...")
+    from sklearn.linear_model import LinearRegression
+    lr_pipeline = build_pipeline(LinearRegression())
+    lr_pipeline.fit(X_train, y_train)
+    evaluate_regression(lr_pipeline, X_test, y_test, "Linear Regression (Scaled)")
 
-    print("Training Random Forest...")
-    rf = RandomForestClassifier(
+    # RANDOM FOREST REGRESSOR
+    print("Training Random Forest Regressor...")
+    from sklearn.ensemble import RandomForestRegressor
+    rf_pipeline = build_pipeline(RandomForestRegressor(
         n_estimators=300,
         max_depth=6,
         random_state=42
-    )
-    rf.fit(X_train, y_train)
-    evaluate(rf, X_test, y_test, "Random Forest")
+    ))
+    rf_pipeline.fit(X_train, y_train)
+    evaluate_regression(rf_pipeline, X_test, y_test, "Random Forest (Scaled)")
+
+    # SAVE PIPELINED MODELS
+    print("Saving models...")
+    MODEL_DIR = Path("app/models")
+    MODEL_DIR.mkdir(exist_ok=True)
+
+    joblib.dump(lr_pipeline, MODEL_DIR / "linear_regression.pkl")
+    joblib.dump(rf_pipeline, MODEL_DIR / "random_forest.pkl")
+
+    print("Models saved to app/models/")
 
 
 if __name__ == "__main__":
