@@ -1,9 +1,8 @@
 from app.utils.ohlcv import load_ohlcv
 from app.ml.features import compute_features
 from app.utils.db import get_conn
+from app.constants.tickers import TICKERS
 import json
-
-TICKERS = ["AAPL", "MSFT", "SPY"]
 
 def load_features_to_db():
     conn = get_conn()
@@ -18,7 +17,6 @@ def load_features_to_db():
             df = load_ohlcv(ticker)
             df = compute_features(df)
 
-            # Drop rows with NaNs in ANY computed feature
             # Keep only full-valid rows
             df_clean = df.dropna().copy()
 
